@@ -1,4 +1,5 @@
-use crate::pac::RCC;
+use crate::pac::{RCC, PWR, FLASH};
+use core::marker::PhantomData;
 
 // System Clock type states
 pub struct SourceHSI16;
@@ -12,8 +13,20 @@ pub struct PLLEnabled;
 // Range   |  MSI  | HSI16 |  HSE  | PLL/PLLSAI1/PLLSAI2
 // Range 1 | 48MHz | 16MHz | 48MHz | 80MHz
 // Range 2 | 24MHz | 16MHz | 26MHz | 26MHz
-pub struct VRange1;
-pub struct VRange2;
+#[derive(PartialEq)]
+pub enum VoltageRange {
+    VRange1Boost = 0b00,
+    VRange1 = 0b01,
+    VRange2 = 0b10,
+}
+
+pub enum FlashLatency {
+    Latency0 = 0b000,
+    Latency1 = 0b001,
+    Latency2 = 0b010,
+    Latency3 = 0b011,
+    Latency4 = 0b100,
+}
 
 // MSI Range
 #[derive(Clone)]
@@ -44,31 +57,38 @@ pub struct PLLConfig {
     PLLM: u8,
 }
 
-pub struct ClockManager<VRANGE, SOURCE, PLL> {
+pub struct ClockManager<SOURCE, PLL> {
     pub sys_clock: u32,
     msi_range: MSIRange,
-    vrange: VRANGE,
     source: SOURCE,
     pllenabled: PLL,
+    //vrange: PhantomData<VRANGE>,
+    //source: PhantomData<SOURCE>,
+    //pllenabled: PhantomData<PLL>,
 }
 
-impl<VRANGE, SOURCE, PLL> ClockManager<VRANGE, SOURCE, PLL> {
-    pub fn new() -> ClockManager<VRange1, SourceMSI, PLLDisabled> {
+impl ClockManager<SourceMSI, PLLDisabled> {
+    pub fn new() -> ClockManager<SourceMSI, PLLDisabled> {
         // System clock starts at 4MHz with MSI on reset
 
-
-        let result = ClockManager {
-            sys_clock: 4_000_000,
-            msi_range: MSIRange::Range4,
-            vrange: VRange1,
-            source: SourceMSI,
-            pllenabled: PLLDisabled,
-        };
-        result
+        ClockManager { 
+            sys_clock: 4_000_000, 
+            msi_range: MSIRange::Range4,  
+            source: SourceMSI, 
+            pllenabled: PLLDisabled 
+        }
+        // let result = ClockManager {
+        //     sys_clock: 4_000_000,
+        //     msi_range: MSIRange::Range4,
+        //     //vrange: VRange1,
+        //     //source: SourceMSI,
+        //     //pllenabled: PLLDisabled,
+        // };
+        // result
     }
 }
 
-impl<VRANGE, PLL> ClockManager<VRANGE, SourceMSI, PLL> {
+impl<PLL> ClockManager<SourceMSI, PLL> {
     pub fn update_msi_range(&mut self, new_range: MSIRange) {
         let rcc = unsafe { &(*RCC::ptr()) };
         // NOTE: MSIRANGE can only be modified when MSI is OFF or when MSI is ready
@@ -83,10 +103,70 @@ impl<VRANGE, PLL> ClockManager<VRANGE, SourceMSI, PLL> {
             // Maybe return a Result here
         }
 
+        // Need to update the flash wait states
+        // Enable the PWR clock if not already
+        if rcc.apb1enr1().read().pwren().bit_is_clear() {
+            rcc.apb1enr1().modify(|_,w| w.pwren().set_bit());
+            // Need a delay after enabling 
+            while rcc.apb1enr1().read().pwren().bit_is_clear() {
+
+            }
+        }
+        let pwr = unsafe { &(*PWR::ptr()) };
+        let curr_vos;
+        if pwr.cr1().read().vos() == VoltageRange::VRange2 as u8 {
+            curr_vos = VoltageRange::VRange2;
+        } else {
+            curr_vos = VoltageRange::VRange1;
+        }
+        // L496 doesn't have boost range
+        // Set flash states based on the MSI range
+        let new_latency: FlashLatency;
+        if curr_vos == VoltageRange::VRange1 {
+            match new_range {
+                MSIRange::Range0 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range1 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range2 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range3 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range4 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range5 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range6 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range7 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range8 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range9 => new_latency = FlashLatency::Latency1,
+                MSIRange::Range10 => new_latency = FlashLatency::Latency1,
+                MSIRange::Range11 => new_latency = FlashLatency::Latency2,
+            };
+        } else {
+            match new_range {
+                MSIRange::Range0 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range1 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range2 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range3 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range4 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range5 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range6 => new_latency = FlashLatency::Latency0,
+                MSIRange::Range7 => new_latency = FlashLatency::Latency1,
+                MSIRange::Range8 => new_latency = FlashLatency::Latency2,
+                MSIRange::Range9 => new_latency = FlashLatency::Latency2,
+                MSIRange::Range10 => new_latency = FlashLatency::Latency2,
+                MSIRange::Range11 => new_latency = FlashLatency::Latency2,
+            };
+        }
+        let flash = unsafe { &(*FLASH::ptr()) };
+        flash.acr().modify(|_,w| unsafe { w.latency().bits(new_latency as u8) });
+
         self.msi_range = new_range.clone();
+
+        // Set the MSIRGSEL to set range based on the CR value
+        rcc.cr().modify(|_,w| w.msirgsel().set_bit());
 
         // Update the MSI range
         rcc.cr().modify(|_,w| unsafe { w.msirange().bits(new_range as u8) });
+
+        while rcc.cr().read().msirdy().bit_is_clear() {
+
+        }
     }
 
     // Function to enable the PLL with the given config values
@@ -100,11 +180,33 @@ impl<VRANGE, PLL> ClockManager<VRANGE, SourceMSI, PLL> {
         // Enable the PLL 
     }
 
-    pub fn switch_to_hsi(self) -> ClockManager<VRANGE, SourceHSI16, PLL> {
+    pub fn switch_to_hsi(self) -> ClockManager<SourceHSI16, PLL> {
+        let rcc = unsafe { &(*RCC::ptr()) };
+
+        // First turn on the HSI16
+        rcc.cr().modify(|_,w| w.hsion().set_bit());
+
+        // Wait for HSI ready
+        while rcc.cr().read().hsirdy().bit_is_clear() {
+            // TODO: Consider adding a timeout here
+        }
+
+        // Switch to the HSI
+        rcc.cfgr().modify( unsafe { |_,w| w.sw().bits(0b01) } );
+
+        // Wait for system clock switch status
+        while rcc.cfgr().read().sws().bits() != 0b01 {
+            // TODO: Consider adding a timeout here
+        }
+
+        // Turn off the MSI if not used
+        // TODO: Put the clock sources in a counting ref or something
+        rcc.cr().modify(|_,w| w.msion().clear_bit());
+
         let result = ClockManager {
             sys_clock: 16_000_000,
             msi_range: self.msi_range,
-            vrange: self.vrange,
+            // vrange: self.vrange,
             source: SourceHSI16,
             pllenabled: self.pllenabled,
         };

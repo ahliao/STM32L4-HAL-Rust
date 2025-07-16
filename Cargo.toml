@@ -1,5 +1,5 @@
 [package]
-name = "STM32L4 HAL"
+name = "stm32l4_hal"
 version = "0.1.0"
 edition = "2024"
 
